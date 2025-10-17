@@ -1,7 +1,6 @@
 from sqlalchemy import create_engine, MetaData
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 import os
 import logging
 
@@ -48,14 +47,25 @@ else:
         
 logger.info(f"Using database: {'PostgreSQL' if 'postgresql' in ASYNC_DATABASE_URL else 'SQLite'}")
 
+# Declarative Base using modern SQLAlchemy 2.0 style
+class Base(DeclarativeBase):
+    pass
+
 try:
-    async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=True)
-    AsyncSessionLocal = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
+    async_engine = create_async_engine(
+        ASYNC_DATABASE_URL, 
+        echo=False,  # Set to False to reduce log noise
+        pool_pre_ping=True,  # Enable connection health checks
+        pool_recycle=3600  # Recycle connections after 1 hour
+    )
+    AsyncSessionLocal = async_sessionmaker(
+        async_engine, 
+        class_=AsyncSession, 
+        expire_on_commit=False
+    )
 except Exception as e:
     logger.error(f"Failed to create database engine: {e}")
     raise RuntimeError(f"Database connection failed. Please check DATABASE_URL configuration: {e}")
-
-Base = declarative_base()
 
 async def get_db():
     async with AsyncSessionLocal() as session:

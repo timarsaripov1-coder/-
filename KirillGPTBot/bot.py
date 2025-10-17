@@ -60,8 +60,8 @@ def save_user_message_to_db(message):
         message_hash = hashlib.sha256((message.text or "").encode()).hexdigest()[:8]
         run_async(bot_db.save_message(
             telegram_message_id=message.message_id,
-            chat_id=str(chat.id),
-            user_id=str(user.id),
+            chat_id=chat.id,  # UUID объект, не строка
+            user_id=user.id,  # UUID объект, не строка
             content=message.text or "",
             message_type="text",
             is_from_bot=False,
@@ -97,8 +97,8 @@ def save_bot_message_to_db(bot_message, response_hash):
         # Сохраняем ответ бота
         run_async(bot_db.save_message(
             telegram_message_id=bot_message.message_id,
-            chat_id=str(chat.id),
-            user_id=str(bot_user.id),
+            chat_id=chat.id,  # UUID объект, не строка
+            user_id=bot_user.id,  # UUID объект, не строка
             content=bot_message.text or "",
             message_type="text",
             is_from_bot=True,

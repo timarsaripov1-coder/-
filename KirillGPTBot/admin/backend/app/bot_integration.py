@@ -95,7 +95,7 @@ class BotDatabaseIntegration:
             
             return user
     
-    async def save_message(self, telegram_message_id: int, chat_id: str, user_id: str,
+    async def save_message(self, telegram_message_id: int, chat_id, user_id,
                           content: str, message_type: str = "text", is_from_bot: bool = False,
                           message_hash: Optional[str] = None) -> Message:
         """Сохранить сообщение в базе данных"""

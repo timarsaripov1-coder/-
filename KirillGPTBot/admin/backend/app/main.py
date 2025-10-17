@@ -334,7 +334,7 @@ async def send_admin_message(
             bot_integration = BotDatabaseIntegration()
             await bot_integration.save_message(
                 telegram_message_id=telegram_data["result"]["message_id"],
-                chat_id=str(chat.id),  # Используем внутренний UUID чата
+                chat_id=chat.id,  # UUID объект
                 user_id=None,  # Бот не имеет user_id
                 content=content,
                 message_type="text",

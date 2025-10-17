@@ -1,0 +1,32 @@
+# Telegram Bot
+pyTelegramBotAPI==4.29.1
+
+# Google AI
+google-genai>=1.33.0
+
+# Environment & Utils
+python-dotenv==1.1.1
+pillow>=11.3.0
+
+# Database (optional, for admin panel)
+sqlalchemy>=2.0.23
+asyncpg>=0.29.0
+aiosqlite>=0.20.0
+
+# FastAPI (optional, for admin panel)
+fastapi>=0.104.1
+uvicorn>=0.24.0
+websockets>=12.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+
+# Authentication (optional, for admin panel)
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Redis (optional, for caching)
+redis>=5.0.1
+
+# Other
+httpx>=0.28.0
