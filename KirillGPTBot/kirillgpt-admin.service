@@ -1,0 +1,23 @@
+[Unit]
+Description=KirillGPT Admin Panel
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/workspace/KirillGPTBot/admin/backend
+Environment="PATH=/usr/bin:/usr/local/bin:/home/ubuntu/.local/bin"
+ExecStart=/usr/bin/python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+# Логирование
+StandardOutput=append:/var/log/kirillgpt/admin.log
+StandardError=append:/var/log/kirillgpt/admin-error.log
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
