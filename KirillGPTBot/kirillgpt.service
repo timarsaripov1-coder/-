@@ -1,0 +1,23 @@
+[Unit]
+Description=KirillGPT Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/workspace/KirillGPTBot
+Environment="PATH=/usr/bin:/usr/local/bin"
+ExecStart=/usr/bin/python3 /workspace/KirillGPTBot/bot.py
+Restart=always
+RestartSec=10
+
+# Логирование
+StandardOutput=append:/var/log/kirillgpt/bot.log
+StandardError=append:/var/log/kirillgpt/error.log
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
