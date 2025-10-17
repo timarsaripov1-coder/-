@@ -1,0 +1,102 @@
+Быстрый чеклист (проверь в таком порядке)
+
+Токен бота верный и не утёк/не отозван.
+
+Отправка идёт с сервера, а не из браузера клиента (токен нельзя держать в клиентском JS).
+
+Правильный API для платформы (Telegram: sendMessage, Discord: REST /channels/{id}/messages или библиотека; Slack: chat.postMessage).
+
+Бот приглашён в чат/канал и имеет разрешения на отправку сообщений.
+
+Используется бот-токен, а не user-токен.
+
+Правильный ID чата/канала (в Telegram — chat_id, в Discord — channel_id). Для групп/супергрупп с Telegram — иногда нужен -100... префикс.
+
+Проверка ответа API: логируй HTTP-код и тело ответа — там будет причина (403, 401, 429, 400 и т.д.).
+
+Проверяй rate-limit (429) и ошибки формата (JSON).
+
+В случае webhooks / socket соединений — убедись, что соединение alive (для Discord gateway — intents и присутствие бота).
+
+Если используешь прокси/корзину запросов (CORS, CSRF, nginx) — убедись, что запрос доходит до бэка и бэку разрешено делать исходящие запросы.
+
+Частые конкретные причины и решения
+
+401 Unauthorized — неверный токен.
+
+403 Forbidden — бот не имеет прав/удален из чата или используется endpoint, требующий дополнительных прав.
+
+400 Bad Request — неверный chat_id/payload (например, telegram: пытаюсь отправить HTML без указания parse_mode).
+
+429 Too Many Requests — превысили лимит. Подожди/внедри retry-backoff.
+
+Ничего не происходит, но 200 OK — обычно проблема с форматом данных (например, message text пуст) — логируй тело ответа.
+
+В веб-приложении пытались отправлять от имени бота прямо из браузера — токен перехватят; нужно проксировать через серверную часть.
+
+Минимальные примеры
+Telegram — Node.js (fetch / axios)
+// Node.js + fetch (выполняется на сервере)
+const fetch = require('node-fetch');
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const chatId = '<CHAT_ID>'; // пример: -1001234567890 или 12345678
+const text = 'Привет от бота!';
+
+async function sendTelegram() {
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+  });
+  const data = await res.json();
+  console.log(res.status, data);
+}
+sendTelegram().catch(console.error);
+
+Telegram — Python (requests)
+import os, requests
+BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
+chat_id = "<CHAT_ID>"
+text = "Привет от бота!"
+
+r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                  json={"chat_id": chat_id, "text": text})
+print(r.status_code, r.text)
+
+Discord — Node.js (axios)
+const axios = require('axios');
+const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const channelId = 'CHANNEL_ID';
+const text = 'Привет от бота!';
+
+axios.post(`https://discord.com/api/v10/channels/${channelId}/messages`,
+  { content: text },
+  { headers: { Authorization: `Bot ${BOT_TOKEN}`, 'Content-Type': 'application/json' } }
+).then(r => console.log(r.status, r.data))
+ .catch(err => console.error(err.response?.status, err.response?.data || err.message));
+
+
+Для Discord: убедись, что боту выданы нужные Intents и он добавлен в сервер с правом Send Messages.
+
+Что сделать прямо сейчас (шаги для диагностики)
+
+На сервере, где запускается админ-панель, запусти короткий скрипт (пример Telegram выше) и посмотри ответ API.
+
+Если возвращается ошибка — скопируй сюда HTTP-код и тело ответа (можно замаскировать токен).
+
+Если 200 OK, но сообщение не появляется — проверь chat_id (частая ошибка) и наличие бота в чате.
+
+Проверь логи админ-панели: доходят ли запросы до бэка, есть ли ошибки (stack trace).
+
+Убедись, что в проде нет CORS/CSRF, мешающего отправке (но запросы к внешнему API должны быть серверные).
+
+Если хочешь — я сделаю конкретнее
+
+Пришли (скопируй, замаскировав токен):
+
+фрагмент кода, который выполняет отправку сообщений (серверный файл),
+
+ответ API (HTTP статус + тело),
+
+какая платформа (Telegram / Discord / Slack / др.),
+и я дам точный фикс и готовый исправленный код.
