@@ -1,0 +1,296 @@
+1) Критическая уязвимость: Prompt injection / неконтролируемая подстановка пользовательского текста в system prompt
+
+Проблема: вы конкатенируете KIRILL_SYSTEM_PROMPT + все сообщения пользователя в одну строку conversation_text. Пользователь может отправить текст, который выглядит как инструкции (например System: ...) и тем самым изменить поведение генератора (prompt injection).
+Почему плохо: позволит пользователю переписать правила бота, заставить модель раскрывать секреты, выполнять нежелательные инструкции и т.д.
+Исправление: никогда не конкатенировать system-подсказку и историю как единый плоский текст. Отправляйте system prompt отдельно в штатном формате messages = [ {"role":"system","content": KIRILL_SYSTEM_PROMPT}, {"role":"user","content": ...}, ... ] или используйте API, которое поддерживает роль/сообщения. Дополнительно — фильтровать/ограничивать содержимое user-сent messages: обрезать, удалять строки, похожие на System:/Assistant:/Role:.
+
+Код-фикc (пример):
+
+# безопасно: не включаем "System:" в пользовательские сообщения
+def sanitize_user_message(text, max_len=2000):
+    text = text.replace("\r", " ").replace("\n", " ")
+    # убрать вхождения "system:"/ "assistant:" и т.п.
+    for token in ["system:", "assistant:", "user:", "role:"]:
+        text = text.replace(token, "")
+    if len(text) > max_len:
+        text = text[:max_len]
+    return text
+
+
+И при сборке messages:
+
+messages = [{"role":"system", "content": KIRILL_SYSTEM_PROMPT}]
+for m in user_conversations[user_id]:
+    messages.append({"role": m["role"], "content": sanitize_user_message(m["content"])})
+
+2) Хранение истории в оперативной памяти (user_conversations = {}) — масштаб/устойчивость/сохранность
+
+Проблема: при рестарте всё теряется; при увеличении числа пользователей — memory OOM; в многопроцессной/многопоточной среде нет общей памяти.
+Исправление: использовать Redis / persistent store (SQLite/leveldb) с TTL, atomic ops. Минимум: переключиться на Redis и лимитировать размер истории per-user.
+
+Пример (используя redis):
+
+import redis, json
+r = redis.Redis(host='127.0.0.1', port=6379, db=0)
+
+def push_message(user_id, role, content):
+    key = f"conv:{user_id}"
+    r.rpush(key, json.dumps({"role": role, "content": content}))
+    r.ltrim(key, -20, -1)  # держать последние 20 сообщений
+    r.expire(key, 7*24*3600)  # держать 7 дней
+
+3) Thread-safety / concurrency
+
+Проблема: user_conversations читается и пишется без блокировок — race condition при одновременных запросах от одного пользователя в многопоточном боте.
+Исправление: если остаётесь в памяти — использовать threading.Lock() per-user или глобальный lock; лучше — Redis, у которого atomic операции.
+
+Пример (Lock):
+
+from collections import defaultdict
+import threading
+locks = defaultdict(threading.Lock)
+
+def safe_append(user_id, entry):
+    with locks[user_id]:
+        user_conversations.setdefault(user_id, []).append(entry)
+
+4) Неправильная обработка ответа от API
+
+Проблема: ai_response = response.text if response.text else ... — если response None или структура другая, это упадёт.
+Исправление: безопасная проверка getattr(response, 'text', None) и поддержка разных форматов ответа (object, dict, list). Также лимитировать длину ответа.
+
+Пример:
+
+raw = getattr(response, "text", None)
+if raw is None and isinstance(response, dict):
+    raw = response.get("output") or response.get("text")
+ai_response = raw or "Что-то я сегодня молчун... ну ты понял."
+
+5) Нет retry/backoff для внешнего API
+
+Проблема: любые сетевые сбои приведут к немедленному падению; no exponential backoff.
+Исправление: добавить retry с экспоненциальным бэкоффом, ограничение общего времени. Можно использовать библиотеку tenacity или backoff.
+
+Пример с backoff:
+
+import backoff
+@backoff.on_exception(backoff.expo, Exception, max_time=30)
+def call_model(...):
+    return client.models.generate_content(...)
+
+6) Отсутствует проверка размера входного сообщения (DoS / токены)
+
+Проблема: пользователь может отправить огромный текст (или много сообщений) — вы строите огромный prompt и платите/переполняете модель.
+Исправление: лимитировать вход — MAX_USER_MSG_LEN = 2000 и при превышении — отброс/truncate + клиент уведомление.
+
+Код:
+
+MAX_USER_MSG_LEN = 2000
+def normalize_input(text):
+    if len(text) > MAX_USER_MSG_LEN:
+        return text[:MAX_USER_MSG_LEN] + " ...[сокращено]"
+    return text
+
+7) Логирование пользовательских сообщений (privacy/GDPR)
+
+Проблема: logger.info(f"Пользователь {user_id}: {user_message}") — логируете полные тексты. На проде это риск (личные данные).
+Исправление: логировать хэш/обозначение/только метаданные (длина, частота), либо маскировать. Не храните токены в логах.
+
+Пример:
+
+import hashlib
+fingerprint = hashlib.sha256(user_message.encode()).hexdigest()[:8]
+logger.info(f"Пользователь {user_id} message_hash={fingerprint} len={len(user_message)}")
+
+8) Нет rate-limiting / flood control — DoS via Telegram messages
+
+Проблема: боты polling/webhook легко перегружаются; пользователь может спамить.
+Исправление: простая per-user rate limit (token-bucket) — либо использовать Redis leaky-bucket.
+
+Простой in-memory limiter (пример):
+
+from time import time
+RATE = 1 # message per second
+last_ts = {}
+def allowed(user_id):
+    now = time()
+    if user_id not in last_ts or now - last_ts[user_id] > 1.0/RATE:
+        last_ts[user_id] = now
+        return True
+    return False
+# проверить в начале handler'а
+
+
+(Для продакшна — Redis-based limiter.)
+
+9) Неявные зависимости и отсутствие валидации env
+
+Проблема: вы exit(1) без понятного логирования и без возврата к контроллеру; не проверяется формат токенов.
+Исправление: валидировать окружение, вернуть понятное исключение/код, логировать причину, рекомендовать Secret Manager. Не делать exit(1) в импорте — бросать исключение или корректно завершать.
+
+10) Polling вместо webhooks (масштаб/надежность)
+
+Проблема: bot.polling(none_stop=True) — неэффективно в проде, проблемно при множестве инстансов.
+Исправление: переход на webhook + HTTPS endpoint (nginx + gunicorn / serverless), или использовать aiogram (async) для лучшей масштабируемости.
+
+11) Возможность XSS / форматных атак при отправке ответов
+
+Проблема: Telegram поддерживает parse_mode (HTML/Markdown). Если вы когда-нибудь начнёте указывать parse_mode, надо экранировать.
+Исправление: всегда отправлять raw text без parse_mode или экранировать Markdown/HTML. В PyTelegramBotAPI есть telebot.util.escape_markdown.
+
+12) Неверный/неоднозначный контроль длины истории (комментарий в коде)
+
+Проблема: комментарий говорит «последними 10», код использует 20. Поставьте константу и используйте её везде.
+Исправление: MAX_HISTORY = 20 и единообразно.
+
+13) Нет модерации/фильтрации ответов модели
+
+ППС (не политика): модель может сгенерировать нежелательный контент — технически это баг. Вставьте автоматическую проверку ответа (хоть простые regex/ключевые слова) и на неудачный вывод возвращайте отказ/редактирование.
+
+14) Информационные/логические баги: “model” и параметры — гибкость
+
+Проблема: модель захардкожена; параметры генерирования также.
+Исправление: вынести конфиг в env vars: GENAI_MODEL, GENAI_TEMPERATURE, MAX_TOKENS.
+
+15) Плохая обработка исключений при старте
+
+Проблема: если бот падает в bot.polling — нет механизма авто-restart/healthcheck.
+Исправление: контейнеризировать и запускать под process supervisor (systemd / docker restart policy) и healthcheck.
+
+Готовый патч — улучшенная версия get_response (сфокусирована на баги/уязвимости)
+
+Ниже — компактная версиония, которая решает основные пункты: sanitize, truncation, lock, retry, safe response extraction, history limit constant, basic rate-limit hook, safe logging, and Redis-backed history (если Redis доступен — иначе fallback to memory).
+
+import threading, time, json, os, hashlib, random
+from backoff import on_exception, expo
+import redis
+
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", 20))
+MAX_USER_MSG_LEN = int(os.getenv("MAX_USER_MSG_LEN", 2000))
+RATE_WINDOW = float(os.getenv("RATE_WINDOW", 1.0))  # seconds between messages
+
+# Redis optional
+REDIS_URL = os.getenv("REDIS_URL")
+redis_client = redis.Redis.from_url(REDIS_URL) if REDIS_URL else None
+
+locks = {}
+
+def get_lock(uid):
+    if uid not in locks:
+        locks[uid] = threading.Lock()
+    return locks[uid]
+
+def sanitize_user_message(text):
+    # remove control tokens that may attempt prompt injection
+    text = text.replace("\r", " ").replace("\n", " ")
+    for token in ["system:", "assistant:", "role:", "user:"]:
+        text = text.replace(token, "")
+    if len(text) > MAX_USER_MSG_LEN:
+        text = text[:MAX_USER_MSG_LEN] + " [сокращено]"
+    return text
+
+def push_history_redis(user_id, role, content):
+    key = f"conv:{user_id}"
+    redis_client.rpush(key, json.dumps({"role":role, "content":content}))
+    redis_client.ltrim(key, -MAX_HISTORY, -1)
+    redis_client.expire(key, 7*24*3600)
+
+def get_history_redis(user_id):
+    key = f"conv:{user_id}"
+    raw = redis_client.lrange(key, 0, -1)
+    return [json.loads(x) for x in raw]
+
+def push_history_mem(user_id, role, content):
+    with get_lock(user_id):
+        lst = user_conversations.setdefault(user_id, [])
+        lst.append({"role":role, "content":content})
+        if len(lst) > MAX_HISTORY:
+            user_conversations[user_id] = lst[-MAX_HISTORY:]
+
+def get_history_mem(user_id):
+    with get_lock(user_id):
+        return list(user_conversations.get(user_id, []))
+
+# simple rate limiter (in-memory)
+last_ts = {}
+def rate_allowed(user_id):
+    now = time.time()
+    if user_id not in last_ts or now - last_ts[user_id] > RATE_WINDOW:
+        last_ts[user_id] = now
+        return True
+    return False
+
+class KirillGPT:
+    def __init__(self, client, system_prompt):
+        self.client = client
+        self.system_prompt = system_prompt
+        self.model = os.getenv("GENAI_MODEL", "gemini-2.0-flash-exp")
+
+    @on_exception(expo, Exception, max_time=20)
+    def _call_model(self, messages, config):
+        return self.client.models.generate_content(model=self.model, contents=messages, config=config)
+
+    def get_response(self, user_id, message):
+        # RATE LIMIT
+        if not rate_allowed(user_id):
+            return "Не так быстро — давай помедленнее, всё сказал?"
+
+        msg = sanitize_user_message(message)
+
+        # push to history
+        if redis_client:
+            push_history_redis(user_id, "user", msg)
+            history = get_history_redis(user_id)
+        else:
+            push_history_mem(user_id, "user", msg)
+            history = get_history_mem(user_id)
+
+        # build messages - system separately, then last messages
+        messages = [{"role":"system", "content": self.system_prompt}]
+        for m in history[-MAX_HISTORY:]:
+            messages.append({"role": m["role"], "content": sanitize_user_message(m["content"])})
+
+        config = {"temperature": float(os.getenv("GENAI_TEMPERATURE", 0.45)), "max_output_tokens": int(os.getenv("MAX_OUTPUT_TOKENS", 300)), "top_p": 0.9}
+
+        try:
+            resp = self._call_model(messages, config)
+        except Exception as e:
+            logger.exception("AI call failed")
+            return random.choice([
+                "Блин, у меня мозги сегодня не работают... ну ты понял.",
+                "Что-то я туплю, попробуй ещё раз — всё сказал?"
+            ])
+
+        # safe extraction
+        ai_text = None
+        if hasattr(resp, "text"):
+            ai_text = getattr(resp, "text", None)
+        elif isinstance(resp, dict):
+            ai_text = resp.get("text") or resp.get("output")
+        if not ai_text:
+            ai_text = "Что-то я сегодня молчун... ну ты понял."
+
+        # cap length
+        if len(ai_text) > 2000:
+            ai_text = ai_text[:2000] + " ...[обрезано]"
+
+        # push assistant reply
+        if redis_client:
+            push_history_redis(user_id, "assistant", ai_text)
+        else:
+            push_history_mem(user_id, "assistant", ai_text)
+
+        # safe logging: hash of user input, not content
+        logger.info(f"user={user_id} reply_len={len(ai_text)}")
+
+        return ai_text
+
+Доп. рекомендации (коротко)
+
+Переведите конфиг в ENV (model, temp, max_tokens).
+
+Контейнеризируйте и ставьте restart policy; используйте webhook и HTTPS (nginx + certbot).
+
+Пиньте зависимости (requirements.txt с версиями).
+
+Сделайте unit-tests на: sane truncation, race conditions (pytest + thread), response extraction.

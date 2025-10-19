@@ -1,0 +1,99 @@
+#!/bin/bash
+set -e
+
+echo
+echo "=== Keepalive Repl setup — автозапуск создаётся ==="
+echo
+
+# Создаём Node.js файлы
+cat > package.json <<'JSON'
+{
+  "name": "keepalive-repl",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+JSON
+
+cat > index.js <<'JS'
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => res.send('OK — repl is alive'));
+app.get('/health', (req, res) => res.json({status:'ok', time: new Date().toISOString()}));
+
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
+JS
+
+# Создаём Python файлы
+cat > main.py <<'PY'
+from flask import Flask, jsonify
+import os, datetime
+
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return 'OK — repl is alive'
+
+@app.route('/health')
+def health():
+    return jsonify(status='ok', time=datetime.datetime.utcnow().isoformat()+'Z')
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 3000))
+    app.run(host='0.0.0.0', port=port)
+PY
+
+cat > requirements.txt <<'TXT'
+Flask==2.2.5
+TXT
+
+# Выбор среды: Node предпочтительно, иначе Python
+if command -v node >/dev/null 2>&1; then
+  echo "Node.js обнаружен — выбираем Node/Express для автозапуска."
+  cat > .replit <<'INI'
+run = "npm start"
+INI
+
+  echo "Устанавливаем npm-зависимости (это может занять минуту)..."
+  npm install --silent
+  echo
+  echo "Готово — Node/Express установлен."
+  echo "Нажми Run в Replit или вручную запусти: npm start"
+else
+  echo "Node.js не найден — выбираем Python/Flask для автозапуска."
+  cat > .replit <<'INI'
+run = "python3 main.py"
+INI
+
+  echo "Устанавливаем Python-зависимости (pip)..."
+  if command -v pip >/dev/null 2>&1; then
+    pip install -r requirements.txt
+  elif command -v pip3 >/dev/null 2>&1; then
+    pip3 install -r requirements.txt
+  else
+    echo "В системе не найден pip. Пожалуйста, установи зависимости вручную: pip install -r requirements.txt"
+  fi
+  echo
+  echo "Готово — Python/Flask установлен."
+  echo "Нажми Run в Replit или вручную запусти: python3 main.py"
+fi
+
+echo
+echo "=== Что дальше ==="
+echo "1) Нажми кнопку Run в Replit — в Preview появится URL вроде: https://<имя-repl>.<имя-пользователя>.repl.co/"
+echo "2) Скопируй этот URL (или добавь /health) и настрой внешний монитор (UptimeRobot, cron-job.org и т.д.), чтобы пинг приходил каждые 5 минут."
+echo
+echo "Пример UptimeRobot: Add New Monitor → Type: HTTP(s) → URL: https://<твой-repl>.repl.co/ → Interval: 5 minutes"
+echo
+echo "Если что-то пошло не так — скопируй в этот чат вывод терминала (ошибки) и я помогу исправить."
+echo
